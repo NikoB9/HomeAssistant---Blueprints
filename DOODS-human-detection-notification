@@ -7,7 +7,6 @@ blueprint:
     matches: { label: [ { score, box } ] }
 
   domain: automation
-  version: "1.0.0"
 
   input:
     doods_entities:
