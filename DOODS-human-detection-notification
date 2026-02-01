@@ -1,14 +1,18 @@
 blueprint:
   name: DOODS – Multi-caméras → 2 photos + 2 notifications (Companion)
   description: >
-    Prend 2 snapshots et envoie 2 notifications push
-    lorsqu'une entité DOODS détecte un label (ex: person).
+    Prend 2 snapshots et envoie 2 notifications push (avec images)
+    lorsqu'une entité DOODS détecte un label donné (ex: person).
+    Compatible avec la structure DOODS :
+    matches: { label: [ { score, box } ] }
 
   domain: automation
+  version: "1.0.0"
 
   input:
     doods_entities:
       name: Entités DOODS
+      description: Entités image_processing.doods_*
       selector:
         entity:
           domain: image_processing
@@ -16,12 +20,14 @@ blueprint:
 
     label_name:
       name: Label DOODS à détecter
+      description: Exemple : person
       default: person
       selector:
         text:
 
     min_confidence:
       name: Confiance minimale (%)
+      description: Score DOODS minimum (ex: 50)
       default: 50
       selector:
         number:
@@ -31,12 +37,16 @@ blueprint:
           unit_of_measurement: "%"
 
     notify_service:
-      name: Service notify mobile
+      name: Service de notification
+      description: >
+        Service notify de l’application Companion
+        (ex: notify.mobile_app_sm_s928b)
       selector:
         text:
 
     snapshot_dir:
-      name: Dossier snapshots
+      name: Dossier des snapshots
+      description: Doit être sous /config/www pour accès via /local
       default: /config/www/snapshots/camera
       selector:
         text:
@@ -65,39 +75,60 @@ variables:
 
 ###############################################################################
 # TRIGGER
-# → déclenche uniquement quand DOODS passe au-dessus de 0
+# Déclenche uniquement quand DOODS détecte au moins un objet (> 0)
 ###############################################################################
 trigger:
   - platform: numeric_state
     entity_id: !input doods_entities
     above: 0
 
+# Source :
+# https://www.home-assistant.io/docs/automation/trigger/#numeric-state-trigger
+
 ###############################################################################
 # CONDITIONS
 ###############################################################################
 condition:
 
-  # Vérifie qu’un objet DOODS correspond bien au label demandé
+  # Vérifie qu’un match DOODS correspond au label demandé
+  # ET que le score est supérieur ou égal au seuil
+  #
+  # Structure attendue :
+  # matches:
+  #   person:
+  #     - score: 50
+  #       box: [...]
+  #
   - condition: template
-    alias: "Label DOODS présent avec confiance suffisante"
+    alias: "Label DOODS présent avec score suffisant"
     value_template: >
-      {% set matches = state_attr(trigger.entity_id, 'matches') or [] %}
+      {% set matches = state_attr(trigger.entity_id, 'matches') or {} %}
       {% set label = i_label | lower %}
-      {% set conf = i_conf | float / 100 %}
-      {{ matches
-         | selectattr('label','equalto', label)
-         | selectattr('score','>=', conf)
+      {% set threshold = i_conf | float %}
+      {{ matches.get(label, [])
+         | selectattr('score','>=', threshold)
          | list
          | count > 0 }}
+
+# Sources :
+# - DOODS Home Assistant attributes
+#   https://github.com/snowzach/doods#home-assistant
+# - Jinja selectattr
+#   https://jinja.palletsprojects.com/en/3.1.x/templates/#selectattr
 
 ###############################################################################
 # ACTIONS
 ###############################################################################
 action:
 
-  # Variables calculées dynamiquement à partir de l'entité DOODS
+  # Variables calculées dynamiquement à partir de l’entité DOODS
   - variables:
+
+      # Convention :
       # image_processing.doods_camera_xxx → camera.camera_xxx
+      #
+      # ⚠️ Cette déduction suppose que le suffixe est identique
+      # (pas de _main, _sub, etc.)
       camera_entity: >
         {% set eid = trigger.entity_id.replace('image_processing.doods_', '') %}
         {{ 'camera.' ~ eid }}
@@ -108,6 +139,7 @@ action:
       file1: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_1.jpg' }}"
       file2: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_2.jpg' }}"
 
+      # Conversion /config/www → /local (obligatoire pour Companion)
       url1: "{{ '/local' ~ file1.split('/config/www')[-1] }}"
       url2: "{{ '/local' ~ file2.split('/config/www')[-1] }}"
 
@@ -117,9 +149,9 @@ action:
       entity_id: "{{ camera_entity }}"
       filename: "{{ file1 }}"
 
-  # ⏱️ Pause configurable
+  # ⏱️ Pause configurable entre les photos
   - delay:
-      seconds: "{{ i_delay }}"
+      seconds: !input second_between_photos
 
   # 📸 Snapshot 2
   - service: camera.snapshot
@@ -131,7 +163,7 @@ action:
   - service: "{{ i_notify }}"
     data:
       title: "👤 Personne détectée ({{ camera_name }})"
-      message: "Détection DOODS ≥ {{ i_conf }}%"
+      message: "Détection DOODS ≥ {{ i_conf }} %"
       data:
         image: "{{ url1 }}"
         push:
@@ -141,6 +173,6 @@ action:
   - service: "{{ i_notify }}"
     data:
       title: "📸 Deuxième photo ({{ camera_name }})"
-      message: "Instant +{{ i_delay }}s"
+      message: "Instant +{{ i_delay }} s"
       data:
         image: "{{ url2 }}"
