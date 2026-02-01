@@ -12,7 +12,8 @@ blueprint:
   input:
     doods_entities:
       name: Entités DOODS
-      description: Entités image_processing.doods_*
+      description: >
+        Entités image_processing.doods_* à surveiller
       selector:
         entity:
           domain: image_processing
@@ -20,14 +21,15 @@ blueprint:
 
     label_name:
       name: Label DOODS à détecter
-      description: Exemple : person
+      description: "Exemple : person"
       default: person
       selector:
         text:
 
     min_confidence:
       name: Confiance minimale (%)
-      description: Score DOODS minimum (ex: 50)
+      description: >
+        Score DOODS minimum requis (ex: 50)
       default: 50
       selector:
         number:
@@ -46,7 +48,8 @@ blueprint:
 
     snapshot_dir:
       name: Dossier des snapshots
-      description: Doit être sous /config/www pour accès via /local
+      description: >
+        Doit être sous /config/www pour être accessible via /local
       default: /config/www/snapshots/camera
       selector:
         text:
@@ -82,23 +85,10 @@ trigger:
     entity_id: !input doods_entities
     above: 0
 
-# Source :
-# https://www.home-assistant.io/docs/automation/trigger/#numeric-state-trigger
-
 ###############################################################################
 # CONDITIONS
 ###############################################################################
 condition:
-
-  # Vérifie qu’un match DOODS correspond au label demandé
-  # ET que le score est supérieur ou égal au seuil
-  #
-  # Structure attendue :
-  # matches:
-  #   person:
-  #     - score: 50
-  #       box: [...]
-  #
   - condition: template
     alias: "Label DOODS présent avec score suffisant"
     value_template: >
@@ -110,25 +100,15 @@ condition:
          | list
          | count > 0 }}
 
-# Sources :
-# - DOODS Home Assistant attributes
-#   https://github.com/snowzach/doods#home-assistant
-# - Jinja selectattr
-#   https://jinja.palletsprojects.com/en/3.1.x/templates/#selectattr
-
 ###############################################################################
 # ACTIONS
 ###############################################################################
 action:
 
-  # Variables calculées dynamiquement à partir de l’entité DOODS
+  # Variables calculées dynamiquement à partir de l'entité DOODS
   - variables:
-
-      # Convention :
+      # Convention attendue :
       # image_processing.doods_camera_xxx → camera.camera_xxx
-      #
-      # ⚠️ Cette déduction suppose que le suffixe est identique
-      # (pas de _main, _sub, etc.)
       camera_entity: >
         {% set eid = trigger.entity_id.replace('image_processing.doods_', '') %}
         {{ 'camera.' ~ eid }}
@@ -139,7 +119,7 @@ action:
       file1: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_1.jpg' }}"
       file2: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_2.jpg' }}"
 
-      # Conversion /config/www → /local (obligatoire pour Companion)
+      # Conversion /config/www → /local (requis par Companion App)
       url1: "{{ '/local' ~ file1.split('/config/www')[-1] }}"
       url2: "{{ '/local' ~ file2.split('/config/www')[-1] }}"
 
@@ -149,7 +129,7 @@ action:
       entity_id: "{{ camera_entity }}"
       filename: "{{ file1 }}"
 
-  # ⏱️ Pause configurable entre les photos
+  # ⏱️ Pause configurable
   - delay:
       seconds: !input second_between_photos
 
