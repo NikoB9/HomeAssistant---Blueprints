@@ -1,0 +1,195 @@
+blueprint:
+  name: DOODS – Multi-caméras → 2 photos + 2 notifications (Companion)
+  description: >
+    Déclenche 2 snapshots et 2 notifications push (avec images) sur détection DOODS "person".
+    Fonctionne pour N caméras si l’entity_id DOODS suit la convention
+    image_processing.doods_<entity_id_camera>. Sinon, utiliser la variante avec mapping.
+
+  domain: automation
+  source_url: https://example.local/blueprints/doods_multi_notif
+  input:
+    doods_entities:
+      name: Entités DOODS
+      description: >
+        Sélectionne une ou plusieurs entités DOODS (image_processing.doods_...)
+      selector:
+        entity:
+          domain: image_processing
+          multiple: true
+    label_name:
+      name: Label à détecter
+      description: Nom du label DOODS (par défaut person)
+      default: person
+      selector:
+        text:
+    min_confidence:
+      name: Confiance minimale (%)
+      description: Filtre sur la confiance DOODS (>=)
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+          step: 5
+    notify_service:
+      name: Service de notification mobile
+      description: >
+        Service notify de l’app Companion, ex: notify.mobile_app_sm_s928b
+      selector:
+        text:
+    snapshot_dir:
+      name: Dossier snapshots
+      description: Dossier accessible via /local (par défaut /config/www/snapshots/camera)
+      default: /config/www/snapshots/camera
+      selector:
+        text:
+    second_between_photos:
+      name: Délai entre photos (secondes)
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 1
+    cooldown_seconds:
+      name: Anti-spam (cooldown en secondes)
+      description: Bloque les déclenchements rapides successifs
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 3600
+          step: 5
+    only_when_away:
+      name: Uniquement quand personne n’est à la maison ?
+      default: false
+      selector:
+        boolean:
+    presence_entity:
+      name: Entité de présence (optionnel si only_when_away = true)
+      description: Zone/presence/choix de groupe, true = à la maison
+      default: ""
+      selector:
+        entity:
+          multiple: false
+
+mode: parallel
+max: 10
+
+variables:
+  i_label: !input label_name
+  i_conf: !input min_confidence
+  i_notify: !input notify_service
+  i_dir: !input snapshot_dir
+  i_delay: !input second_between_photos
+  i_cooldown: !input cooldown_seconds
+  i_only_away: !input only_when_away
+  i_presence: !input presence_entity
+
+trigger:
+  - platform: state
+    entity_id: !input doods_entities
+
+# Anti-spam / debounce simple
+# On garde en mémoire le dernier envoi par caméra via trigger.entity_id
+condition:
+  - condition: template
+    value_template: >
+      {% set st = states(trigger.entity_id) | int(0) %}
+      {{ st > 0 }}
+  - condition: template
+    alias: "Au moins un match 'label' avec confidence >= seuil"
+    value_template: >
+      {% set matches = state_attr(trigger.entity_id, 'matches') or [] %}
+      {% set label = i_label | lower %}
+      {% set conf = i_conf | float(0) / 100.0 %}
+      {% for m in matches %}
+        {% if (m.get('label','') | lower == label) and (m.get('score',0) | float(0)) >= conf %}
+          {{ true }}
+        {% endif %}
+      {% endfor %}
+      {{ false }}
+  - condition: template
+    alias: "Présence (si activée)"
+    value_template: >
+      {% if i_only_away %}
+        {% if i_presence %}
+          {{ not states(i_presence) in ['on','home','present','occupé','occupied','True','true','1'] }}
+        {% else %}
+          true
+        {% endif %}
+      {% else %}
+        true
+      {% endif %}
+  # Cooldown par entité DOODS
+  - condition: template
+    alias: "Cooldown"
+    value_template: >
+      {% set key = 'last_doods_' + trigger.entity_id %}
+      {% set last = state_attr('sensor.date_time_iso', key) or this.attributes.get(key) %}
+      {% set now_ts = now().timestamp() %}
+      {% if last %}
+        {% set elapsed = now_ts - (last | float(0)) %}
+        {{ elapsed >= (i_cooldown | int(0)) }}
+      {% else %}
+        true
+      {% endif %}
+
+action:
+  - variables:
+      # Déduit l'entity_id caméra à partir de l'entité DOODS :
+      # image_processing.doods_camera.xxx  →  camera.camera.xxx
+      camera_entity: >
+        {% set eid = trigger.entity_id.split('image_processing.doods_')[-1] %}
+        {{ 'camera.' + eid }}
+      # Noms conviviaux
+      camera_name: "{{ camera_entity.split('camera.')[-1] }}"
+      ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+      file1: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_1.jpg' }}"
+      file2: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_2.jpg' }}"
+      url1: "{{ '/local' ~ file1.split('/config/www')[-1] }}"
+      url2: "{{ '/local' ~ file2.split('/config/www')[-1] }}"
+
+  # Snapshot 1
+  - service: camera.snapshot
+    data:
+      entity_id: "{{ camera_entity }}"
+      filename: "{{ file1 }}"
+
+  - delay:
+      seconds: !input second_between_photos
+
+  # Snapshot 2
+  - service: camera.snapshot
+    data:
+      entity_id: "{{ camera_entity }}"
+      filename: "{{ file2 }}"
+
+  # Push 1
+  - service: "{{ i_notify }}"
+    data:
+      title: "👤 Personne détectée ({{ camera_name }})"
+      message: "Détection DOODS (≥ {{ (i_conf | int) }}%)"
+      data:
+        image: "{{ url1 }}"
+        push:
+          sound: default
+
+  # Push 2
+  - service: "{{ i_notify }}"
+    data:
+      title: "📸 Deuxième photo ({{ camera_name }})"
+      message: "Instant T+{{ i_delay }}s"
+      data:
+        image: "{{ url2 }}"
+
+  # Mémorise l'horodatage pour cooldown (dans l'automate lui-même)
+  - service: homeassistant.update_entity
+    entity_id: sensor.date_time_iso
+  - variables:
+      _dummy_store: >
+        {% set key = 'last_doods_' + trigger.entity_id %}
+        {% set _ = this.set_attribute(key, now().timestamp()) %}
+        ok
