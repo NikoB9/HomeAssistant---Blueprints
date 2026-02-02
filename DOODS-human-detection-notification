@@ -1,7 +1,8 @@
 blueprint:
-  name: DOODS – Multi-caméras → 2 photos + 2 notifications (Companion)
+  name: DOODS – Multi-caméras → Image latest + 1 photo + 2 notifications (Companion)
   description: >
-    Prend 2 snapshots et envoie 2 notifications push (avec images)
+    Envoie la dernière image sauvegardée par DOODS (latest)
+    et un instantané live de la caméra en 2 notifications push
     lorsqu'une entité DOODS détecte un label donné (ex: person).
     Compatible avec la structure DOODS :
     matches: { label: [ { score, box } ] }
@@ -53,15 +54,6 @@ blueprint:
       selector:
         text:
 
-    second_between_photos:
-      name: Délai entre les photos (secondes)
-      default: 1
-      selector:
-        number:
-          min: 0
-          max: 10
-          step: 1
-
 mode: parallel
 max: 10
 
@@ -73,7 +65,6 @@ variables:
   i_conf: !input min_confidence
   i_notify: !input notify_service
   i_dir: !input snapshot_dir
-  i_delay: !input second_between_photos
 
 ###############################################################################
 # TRIGGER
@@ -104,54 +95,44 @@ condition:
 ###############################################################################
 action:
 
-  # Variables calculées dynamiquement à partir de l'entité DOODS
+  # Variables dynamiques à partir de l'entité DOODS
   - variables:
-      # Convention attendue :
       # image_processing.doods_camera_xxx → camera.camera_xxx
       camera_entity: >
         {% set eid = trigger.entity_id.replace('image_processing.doods_', '') %}
         {{ 'camera.' ~ eid }}
 
       camera_name: "{{ camera_entity.split('camera.')[-1] }}"
+
+      # Chemin de l'image latest sauvegardée par DOODS (accessible via /local)
+      latest_file: "{{ i_dir }}/{{ camera_name }}_latest.jpg"
+      latest_url: "{{ '/local' ~ latest_file.split('/config/www')[-1] }}"
+
+      # Nom et chemin pour la photo instantanée (timestampé)
       ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+      snap_file: "{{ i_dir }}/{{ camera_name }}_{{ ts }}.jpg"
+      snap_url: "{{ '/local' ~ snap_file.split('/config/www')[-1] }}"
 
-      file1: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_1.jpg' }}"
-      file2: "{{ i_dir ~ '/' ~ camera_name ~ '_' ~ ts ~ '_2.jpg' }}"
-
-      # Conversion /config/www → /local (requis par Companion App)
-      url1: "{{ '/local' ~ file1.split('/config/www')[-1] }}"
-      url2: "{{ '/local' ~ file2.split('/config/www')[-1] }}"
-
-  # 📸 Snapshot 1
+  # 📸 Prise de la photo instantanée
   - service: camera.snapshot
     data:
       entity_id: "{{ camera_entity }}"
-      filename: "{{ file1 }}"
+      filename: "{{ snap_file }}"
 
-  # ⏱️ Pause configurable
-  - delay:
-      seconds: !input second_between_photos
-
-  # 📸 Snapshot 2
-  - service: camera.snapshot
-    data:
-      entity_id: "{{ camera_entity }}"
-      filename: "{{ file2 }}"
-
-  # 📲 Notification 1
+  # 📲 Notification 1 : image latest sauvegardée par DOODS
   - service: "{{ i_notify }}"
     data:
       title: "👤 Personne détectée ({{ camera_name }})"
-      message: "Détection DOODS ≥ {{ i_conf }} %"
+      message: "Image DOODS (latest) - détection ≥ {{ i_conf }} %"
       data:
-        image: "{{ url1 }}"
+        image: "{{ latest_url }}"
         push:
           sound: default
 
-  # 📲 Notification 2
+  # 📲 Notification 2 : photo instantanée fraîche
   - service: "{{ i_notify }}"
     data:
-      title: "📸 Deuxième photo ({{ camera_name }})"
-      message: "Instant +{{ i_delay }} s"
+      title: "📸 Photo instantanée ({{ camera_name }})"
+      message: "Instantané pris à la détection"
       data:
-        image: "{{ url2 }}"
+        image: "{{ snap_url }}"
