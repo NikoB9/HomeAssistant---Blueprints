@@ -1,9 +1,8 @@
 blueprint:
-  name: DOODS – Multi-caméras → Image latest + 1 photo + 2 notifications (Companion)
+  name: DOODS – Multi-caméras → Image latest + notification unique (Companion)
   description: >
     Envoie la dernière image sauvegardée par DOODS (latest)
-    et un instantané live de la caméra en 2 notifications push
-    lorsqu'une entité DOODS détecte un label donné (ex: person).
+    en notification push unique à chaque détection d’un label donné (ex: person).
     Compatible avec la structure DOODS :
     matches: { label: [ { score, box } ] }
 
@@ -68,12 +67,11 @@ variables:
 
 ###############################################################################
 # TRIGGER
-# Déclenche uniquement quand DOODS détecte au moins un objet (> 0)
+# Déclenche à chaque mise à jour d’état des entités DOODS
 ###############################################################################
 trigger:
-  - platform: numeric_state
+  - platform: state
     entity_id: !input doods_entities
-    above: 0
 
 ###############################################################################
 # CONDITIONS
@@ -97,7 +95,7 @@ action:
 
   # Variables dynamiques à partir de l'entité DOODS
   - variables:
-      # image_processing.doods_camera_xxx → camera.camera_xxx
+      # Correspondance image_processing.doods_camera_xxx → camera.camera_xxx
       camera_entity: >
         {% set eid = trigger.entity_id.replace('image_processing.doods_', '') %}
         {{ 'camera.' ~ eid }}
@@ -108,18 +106,7 @@ action:
       latest_file: "{{ i_dir }}/{{ camera_name }}_latest.jpg"
       latest_url: "{{ '/local' ~ latest_file.split('/config/www')[-1] }}"
 
-      # Nom et chemin pour la photo instantanée (timestampé)
-      ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
-      snap_file: "{{ i_dir }}/{{ camera_name }}_{{ ts }}.jpg"
-      snap_url: "{{ '/local' ~ snap_file.split('/config/www')[-1] }}"
-
-  # 📸 Prise de la photo instantanée
-  - service: camera.snapshot
-    data:
-      entity_id: "{{ camera_entity }}"
-      filename: "{{ snap_file }}"
-
-  # 📲 Notification 1 : image latest sauvegardée par DOODS
+  # Notification unique avec l'image latest DOODS
   - service: "{{ i_notify }}"
     data:
       title: "👤 Personne détectée ({{ camera_name }})"
@@ -128,11 +115,3 @@ action:
         image: "{{ latest_url }}"
         push:
           sound: default
-
-  # 📲 Notification 2 : photo instantanée fraîche
-  - service: "{{ i_notify }}"
-    data:
-      title: "📸 Photo instantanée ({{ camera_name }})"
-      message: "Instantané pris à la détection"
-      data:
-        image: "{{ snap_url }}"
