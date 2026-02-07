@@ -1,10 +1,8 @@
 blueprint:
-  name: TUYA – Détection humaine (event → caméra auto, snapshot + notif critique)
+  name: TUYA – Détection humaine
   description: >
-    Associe automatiquement un event.* à une caméra en se basant sur le nom.
-    Envoie une notification critique Companion App avec snapshot et accès au flux.
+    Notifie les détections d’humains remontées par les caméras tuya sélectionnées.
   domain: automation
-
   input:
     cameras:
       name: Caméras à surveiller
@@ -12,22 +10,18 @@ blueprint:
         entity:
           domain: camera
           multiple: true
-
     notify_devices:
       name: Appareils Companion à notifier
       selector:
         device:
           integration: mobile_app
           multiple: true
-
     notification_title:
       name: Titre notification
       default: "📷 Détection humaine"
-
     notification_message:
       name: Message notification
       default: "Présence détectée par la caméra"
-
     snapshot_path:
       name: Dossier snapshot
       default: "/media/cameras/snapshots"
@@ -35,43 +29,35 @@ blueprint:
 mode: parallel
 max: 10
 
+# 1. On limite le trigger au domaine 'event' pour éviter de saturer le CPU
 trigger:
   - platform: event
     event_type: state_changed
 
-# 🔑 VARIABLES (OBLIGATOIRE POUR LES INPUTS)
+# 2. On définit TOUTES les variables ici
 variables:
   cameras: !input cameras
   snapshot_path: !input snapshot_path
+  # On extrait l'entité qui a déclenché pour l'utiliser plus bas
+  trigger_entity: "{{ trigger.event.data.entity_id }}"
+  # On cherche la caméra correspondante dès maintenant
+  camera_entity: >
+    {% set found = ns(entity="") %}
+    {% if trigger_entity.startswith('event.') %}
+      {% for cam in cameras %}
+        {% set cam_name = cam.split('.')[-1] %}
+        {% if cam_name in trigger_entity %}
+          {% set found.entity = cam %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ found.entity }}
+  snapshot_file: "{{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg"
 
+# 3. La condition vérifie simplement si on a trouvé une caméra
 condition:
   - condition: template
-    value_template: >
-      {% set entity = trigger.event.data.entity_id %}
-      {% if not entity.startswith('event.') %}
-        false
-      {% else %}
-        {% for cam in cameras %}
-          {% set cam_name = cam.split('.')[-1] %}
-          {% if cam_name in entity %}
-            true
-          {% endif %}
-        {% endfor %}
-        false
-      {% endif %}
-
-variables:
-  camera_entity: >
-    {% set entity = trigger.event.data.entity_id %}
-    {% for cam in cameras %}
-      {% set cam_name = cam.split('.')[-1] %}
-      {% if cam_name in entity %}
-        {{ cam }}
-      {% endif %}
-    {% endfor %}
-
-  snapshot_file: >
-    {{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg
+    value_template: "{{ camera_entity != '' }}"
 
 action:
   - service: camera.snapshot
@@ -82,8 +68,7 @@ action:
   - repeat:
       for_each: !input notify_devices
       sequence:
-        - service: >
-            notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}
+        - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
           data:
             title: !input notification_title
             message: !input notification_message
