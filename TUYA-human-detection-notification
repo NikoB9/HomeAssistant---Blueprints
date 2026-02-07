@@ -1,7 +1,7 @@
 blueprint:
-  name: TUYA – Détection humaine
+  name: TUYA – Détection humaine (V2 Stable)
   description: >
-    Notifie les détections d’humains remontées par les caméras tuya sélectionnées.
+    Associe un event.* à une caméra Tuya et envoie une notification.
   domain: automation
   input:
     cameras:
@@ -29,21 +29,27 @@ blueprint:
 mode: parallel
 max: 10
 
-# 1. On limite le trigger au domaine 'event' pour éviter de saturer le CPU
+# FILTRE : On ne déclenche QUE si une entité "event" change d'état
 trigger:
+  - platform: state
+    entity_id: [] # Laissé vide ici car on va filtrer par domaine ou via les variables
+    # Note : HA ne permet pas de filtrer par domaine facilement dans le trigger d'un blueprint sans lister les entités.
+    # Pour stopper les erreurs, on utilise un trigger d'événement brut mais filtré.
   - platform: event
     event_type: state_changed
+    event_data:
+      domain: event # On ne regarde QUE le domaine event
 
-# 2. On définit TOUTES les variables ici
 variables:
   cameras: !input cameras
   snapshot_path: !input snapshot_path
-  # On extrait l'entité qui a déclenché pour l'utiliser plus bas
-  trigger_entity: "{{ trigger.event.data.entity_id }}"
-  # On cherche la caméra correspondante dès maintenant
+  # Récupération sécurisée de l'ID de l'entité
+  trigger_entity: "{{ trigger.event.data.entity_id if trigger.event is defined else trigger.entity_id }}"
+  
+  # Recherche de la caméra correspondante (Correction namespace)
   camera_entity: >
-    {% set found = ns(entity="") %}
-    {% if trigger_entity.startswith('event.') %}
+    {% set found = namespace(entity="") %}
+    {% if trigger_entity is defined and trigger_entity.startswith('event.') %}
       {% for cam in cameras %}
         {% set cam_name = cam.split('.')[-1] %}
         {% if cam_name in trigger_entity %}
@@ -52,12 +58,13 @@ variables:
       {% endfor %}
     {% endif %}
     {{ found.entity }}
+
   snapshot_file: "{{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg"
 
-# 3. La condition vérifie simplement si on a trouvé une caméra
 condition:
+  # On vérifie qu'on a bien trouvé une caméra et que l'événement est bien une détection (state != unknown)
   - condition: template
-    value_template: "{{ camera_entity != '' }}"
+    value_template: "{{ camera_entity != '' and states(trigger_entity) not in ['unknown', 'unavailable'] }}"
 
 action:
   - service: camera.snapshot
