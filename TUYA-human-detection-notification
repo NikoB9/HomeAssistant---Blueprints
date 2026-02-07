@@ -1,7 +1,7 @@
 blueprint:
-  name: TUYA – Détection humaine (V2 Stable)
+  name: TUYA – Détection humaine
   description: >
-    Associe un event.* à une caméra Tuya et envoie une notification.
+    Envoie une notification lorsque les caméras tuya détectent un humain.
   domain: automation
   input:
     cameras:
