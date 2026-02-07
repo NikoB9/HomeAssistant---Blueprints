@@ -47,7 +47,7 @@ condition:
       {% if not entity.startswith('event.') %}
         false
       {% else %}
-        {% set cam_ids = expand(cameras) | map(attribute='entity_id') | list %}
+        {% set cam_ids = expand(!input 'cameras') | map(attribute='entity_id') | list %}
         {% for cam in cam_ids %}
           {% set cam_name = cam.split('.')[-1] %}
           {% if cam_name in entity %}
@@ -60,7 +60,7 @@ condition:
 variables:
   camera_entity: >
     {% set entity = trigger.event.data.entity_id %}
-    {% set cam_ids = expand(cameras) | map(attribute='entity_id') | list %}
+    {% set cam_ids = expand(!input 'cameras') | map(attribute='entity_id') | list %}
     {% for cam in cam_ids %}
       {% set cam_name = cam.split('.')[-1] %}
       {% if cam_name in entity %}
@@ -69,7 +69,7 @@ variables:
     {% endfor %}
 
   snapshot_file: >
-    {{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg
+    {{ !input 'snapshot_path' }}/{{ camera_entity | replace('.', '_') }}.jpg
 
 action:
   - service: camera.snapshot
