@@ -30,7 +30,7 @@ blueprint:
 
     snapshot_path:
       name: Dossier snapshot
-      default: "/media/cameras"
+      default: "/media/cameras/snapshots"
 
 mode: parallel
 max: 10
