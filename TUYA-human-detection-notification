@@ -1,5 +1,5 @@
 blueprint:
-  name: TUYA – Détection humaine
+  name: TUYA – Détection humaine (Corrigé)
   description: >
     Envoie une notification lorsque les caméras tuya détectent un humain.
   domain: automation
@@ -29,42 +29,42 @@ blueprint:
 mode: parallel
 max: 10
 
-# FILTRE : On ne déclenche QUE si une entité "event" change d'état
 trigger:
+  # On filtre pour ne déclencher que sur le domaine 'event' lors d'un changement d'état réel
   - platform: state
-    entity_id: [] # Laissé vide ici car on va filtrer par domaine ou via les variables
-    # Note : HA ne permet pas de filtrer par domaine facilement dans le trigger d'un blueprint sans lister les entités.
-    # Pour stopper les erreurs, on utilise un trigger d'événement brut mais filtré.
-  - platform: event
-    event_type: state_changed
-    event_data:
-      domain: event # On ne regarde QUE le domaine event
+    entity_id: []
+    # On ne précise pas d'ID ici, mais on va filtrer dans la condition
+    # pour ne pas surcharger le processeur.
 
 variables:
-  cameras: !input cameras
-  snapshot_path: !input snapshot_path
-  # Récupération sécurisée de l'ID de l'entité
-  trigger_entity: "{{ trigger.event.data.entity_id if trigger.event is defined else trigger.entity_id }}"
+  # On force la récupération des inputs en variables locales sécurisées
+  input_cameras: !input cameras
+  input_snapshot_path: !input snapshot_path
   
-  # Recherche de la caméra correspondante (Correction namespace)
+  # Identification de l'entité qui a déclenché
+  trigger_entity: "{{ trigger.entity_id }}"
+  
+  # Logique de correspondance Caméra <-> Event
   camera_entity: >
-    {% set found = namespace(entity="") %}
-    {% if trigger_entity is defined and trigger_entity.startswith('event.') %}
-      {% for cam in cameras %}
-        {% set cam_name = cam.split('.')[-1] %}
-        {% if cam_name in trigger_entity %}
-          {% set found.entity = cam %}
-        {% endif %}
-      {% endfor %}
-    {% endif %}
-    {{ found.entity }}
+    {% set ns = namespace(found="") %}
+    {% for cam in input_cameras %}
+      {% set cam_name = cam.split('.')[-1] %}
+      {# Si le nom de la caméra est contenu dans l'ID de l'événement #}
+      {% if cam_name in trigger_entity %}
+        {% set ns.found = cam %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.found }}
 
-  snapshot_file: "{{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg"
+  snapshot_file: "{{ input_snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg"
 
 condition:
-  # On vérifie qu'on a bien trouvé une caméra et que l'événement est bien une détection (state != unknown)
-  - condition: template
-    value_template: "{{ camera_entity != '' and states(trigger_entity) not in ['unknown', 'unavailable'] }}"
+  # 1. L'entité doit appartenir au domaine 'event'
+  - "{{ trigger.domain == 'event' }}"
+  # 2. On vérifie qu'une caméra correspondante a été trouvée
+  - "{{ camera_entity != '' }}"
+  # 3. On vérifie que l'état n'est pas inconnu (évite les erreurs au reboot)
+  - "{{ states(trigger_entity) not in ['unknown', 'unavailable'] }}"
 
 action:
   - service: camera.snapshot
@@ -80,9 +80,8 @@ action:
             title: !input notification_title
             message: !input notification_message
             data:
-              image: "{{ snapshot_file }}"
+              image: "/media/local/cameras/snapshots/{{ camera_entity | replace('.', '_') }}.jpg"
               clickAction: "/camera/{{ camera_entity }}"
               channel: tuya_critique
               importance: high
               priority: high
-              ttl: 0
