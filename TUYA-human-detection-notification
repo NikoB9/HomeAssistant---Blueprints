@@ -1,9 +1,8 @@
 blueprint:
-  name: Caméra – Détection humaine via event associé (snapshot + notification critique)
+  name: TUYA – Détection humaine (event → caméra auto, snapshot + notif critique)
   description: >
-    Surveille les événements liés à une ou plusieurs caméras en se basant
-    sur la similarité de nom entre l’entité event.* et la caméra.
-    Envoie une notification critique avec snapshot et accès au flux vidéo.
+    Associe automatiquement un event.* à une caméra en se basant sur le nom.
+    Envoie une notification critique Companion App avec snapshot et accès au flux.
   domain: automation
 
   input:
@@ -15,19 +14,19 @@ blueprint:
           multiple: true
 
     notify_devices:
-      name: Appareils à notifier
+      name: Appareils Companion à notifier
       selector:
         device:
           integration: mobile_app
           multiple: true
 
     notification_title:
-      name: Titre
-      default: "📷 Détection caméra"
+      name: Titre notification
+      default: "📷 Détection humaine"
 
     notification_message:
-      name: Message
-      default: "Une présence a été détectée"
+      name: Message notification
+      default: "Présence détectée par la caméra"
 
     snapshot_path:
       name: Dossier snapshot
@@ -40,6 +39,11 @@ trigger:
   - platform: event
     event_type: state_changed
 
+# 🔑 VARIABLES (OBLIGATOIRE POUR LES INPUTS)
+variables:
+  cameras: !input cameras
+  snapshot_path: !input snapshot_path
+
 condition:
   - condition: template
     value_template: >
@@ -47,8 +51,7 @@ condition:
       {% if not entity.startswith('event.') %}
         false
       {% else %}
-        {% set cam_ids = expand(inputs.cameras) | map(attribute='entity_id') | list %}
-        {% for cam in cam_ids %}
+        {% for cam in cameras %}
           {% set cam_name = cam.split('.')[-1] %}
           {% if cam_name in entity %}
             true
@@ -60,8 +63,7 @@ condition:
 variables:
   camera_entity: >
     {% set entity = trigger.event.data.entity_id %}
-    {% set cam_ids = expand(inputs.cameras) | map(attribute='entity_id') | list %}
-    {% for cam in cam_ids %}
+    {% for cam in cameras %}
       {% set cam_name = cam.split('.')[-1] %}
       {% if cam_name in entity %}
         {{ cam }}
@@ -69,7 +71,7 @@ variables:
     {% endfor %}
 
   snapshot_file: >
-    {{ inputs.snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg
+    {{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg
 
 action:
   - service: camera.snapshot
@@ -78,16 +80,16 @@ action:
       filename: "{{ snapshot_file }}"
 
   - repeat:
-      for_each: "{{ inputs.notify_devices }}"
+      for_each: !input notify_devices
       sequence:
         - service: >
-            notify.mobile_app_{{ device_attr(repeat.item, 'name') | lower | replace(' ', '_') }}
+            notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}
           data:
-            title: "{{ inputs.notification_title }}"
-            message: "{{ inputs.notification_message }}"
+            title: !input notification_title
+            message: !input notification_message
             data:
               image: "{{ snapshot_file }}"
-              clickAction: "/lovelace/default_view"
+              clickAction: "/camera/{{ camera_entity }}"
               channel: tuya_critique
               importance: high
               priority: high
