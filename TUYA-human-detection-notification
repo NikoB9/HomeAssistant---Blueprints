@@ -1,0 +1,93 @@
+blueprint:
+  name: Caméra – Détection humaine via event associé (snapshot + notification critique)
+  description: >
+    Surveille les événements liés à une ou plusieurs caméras en se basant
+    sur la similarité de nom entre l’entité event.* et la caméra.
+    Envoie une notification critique avec snapshot et accès au flux vidéo.
+  domain: automation
+
+  input:
+    cameras:
+      name: Caméras à surveiller
+      selector:
+        entity:
+          domain: camera
+          multiple: true
+
+    notify_devices:
+      name: Appareils à notifier
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    notification_title:
+      name: Titre
+      default: "📷 Détection caméra"
+
+    notification_message:
+      name: Message
+      default: "Une présence a été détectée"
+
+    snapshot_path:
+      name: Dossier snapshot
+      default: "/media/cameras"
+
+mode: parallel
+max: 10
+
+trigger:
+  - platform: event
+    event_type: state_changed
+
+condition:
+  - condition: template
+    value_template: >
+      {% set entity = trigger.event.data.entity_id %}
+      {% if not entity.startswith('event.') %}
+        false
+      {% else %}
+        {% set cam_ids = expand(cameras) | map(attribute='entity_id') | list %}
+        {% for cam in cam_ids %}
+          {% set cam_name = cam.split('.')[-1] %}
+          {% if cam_name in entity %}
+            true
+          {% endif %}
+        {% endfor %}
+        false
+      {% endif %}
+
+variables:
+  camera_entity: >
+    {% set entity = trigger.event.data.entity_id %}
+    {% set cam_ids = expand(cameras) | map(attribute='entity_id') | list %}
+    {% for cam in cam_ids %}
+      {% set cam_name = cam.split('.')[-1] %}
+      {% if cam_name in entity %}
+        {{ cam }}
+      {% endif %}
+    {% endfor %}
+
+  snapshot_file: >
+    {{ snapshot_path }}/{{ camera_entity | replace('.', '_') }}.jpg
+
+action:
+  - service: camera.snapshot
+    data:
+      entity_id: "{{ camera_entity }}"
+      filename: "{{ snapshot_file }}"
+
+  - repeat:
+      for_each: !input notify_devices
+      sequence:
+        - service: notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}
+          data:
+            title: !input notification_title
+            message: !input notification_message
+            data:
+              image: "{{ snapshot_file }}"
+              clickAction: "/lovelace/default_view"
+              channel: tuya_critique
+              importance: high
+              priority: high
+              ttl: 0
