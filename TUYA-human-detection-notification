@@ -1,7 +1,7 @@
 blueprint:
   name: TUYA – Détection humaine (Analyse Message)
   description: >
-    Déclenche une notification uniquement quand le message contient 'ipc_human'.
+    Déclenche une notification lors d’une détection de corps humain.
   domain: automation
   input:
     event_entities:
