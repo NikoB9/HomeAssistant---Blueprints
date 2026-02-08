@@ -1,19 +1,17 @@
 blueprint:
-  name: TUYA – Détection humaine (Analyse Message)
+  name: TUYA – Détection humaine
   description: >
     Déclenche une notification lors d’une détection de corps humain.
   domain: automation
   input:
     event_entities:
       name: Entités "Event" à surveiller
-      description: Sélectionnez les entités qui finissent par '_doorbell_message' ou '_motion_video_analysis'.
       selector:
         entity:
           domain: event
           multiple: true
     camera_entities:
       name: Caméras correspondantes
-      description: Les entités caméras pour ouvrir le direct.
       selector:
         entity:
           domain: camera
@@ -24,6 +22,10 @@ blueprint:
         device:
           integration: mobile_app
           multiple: true
+
+mode: parallel
+max: 10
+
 
 mode: parallel
 max: 10
