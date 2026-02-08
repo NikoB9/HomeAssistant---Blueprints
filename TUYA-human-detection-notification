@@ -1,43 +1,49 @@
 blueprint:
-  name: TUYA – Détection humaine (Lien Direct - Instantané)
+  name: TUYA – Détection humaine (Analyse Message)
   description: >
-    Envoie une notification immédiate sans snapshot. Le clic ouvre le direct.
+    Déclenche une notification uniquement quand le message contient 'ipc_human'.
   domain: automation
   input:
-    cameras:
-      name: Caméras à surveiller
+    event_entities:
+      name: Entités "Event" à surveiller
+      description: Sélectionnez les entités qui finissent par '_doorbell_message' ou '_motion_video_analysis'.
+      selector:
+        entity:
+          domain: event
+          multiple: true
+    camera_entities:
+      name: Caméras correspondantes
+      description: Les entités caméras pour ouvrir le direct.
       selector:
         entity:
           domain: camera
           multiple: true
     notify_devices:
-      name: Appareils Companion à notifier
+      name: Appareils à notifier
       selector:
         device:
           integration: mobile_app
           multiple: true
-    notification_title:
-      name: Titre notification
-      default: "🏃 Mouvement détecté"
-    notification_message:
-      name: Message notification
-      default: "Une présence humaine a été détectée."
 
-# Mode parallèle pour traiter chaque événement immédiatement
 mode: parallel
 max: 10
 
 trigger:
   - platform: state
-    entity_id: []
+    entity_id: !input event_entities
 
 variables:
-  input_cameras: !input cameras
-  trigger_entity: "{{ trigger.entity_id }}"
+  # On récupère le message JSON envoyé par Tuya
+  event_msg: "{{ trigger.to_state.attributes.message | default('') }}"
+  # On vérifie si c'est une détection humaine
+  is_human: "{{ 'ipc_human' in event_msg }}"
   
+  # Logique de correspondance pour trouver la caméra
+  all_cameras: !input camera_entities
+  trigger_entity: "{{ trigger.entity_id }}"
   camera_entity: >
     {% set ns = namespace(found="") %}
-    {% for cam in input_cameras %}
+    {% for cam in all_cameras %}
       {% set cam_name = cam.split('.')[-1] %}
       {% if cam_name in trigger_entity %}
         {% set ns.found = cam %}
@@ -46,9 +52,10 @@ variables:
     {{ ns.found }}
 
 condition:
-  - "{{ trigger.domain == 'event' }}"
+  # 1. On ne continue QUE si le message contient 'ipc_human'
+  - "{{ is_human }}"
+  # 2. On vérifie qu'on a trouvé une caméra correspondante
   - "{{ camera_entity != '' }}"
-  - "{{ states(trigger_entity) not in ['unknown', 'unavailable'] }}"
 
 action:
   - repeat:
@@ -56,8 +63,8 @@ action:
       sequence:
         - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
           data:
-            title: !input notification_title
-            message: "{{ notification_message }} (Caméra: {{ state_attr(camera_entity, 'friendly_name') }})"
+            title: "🏃 Humain détecté !"
+            message: "Présence détectée sur {{ state_attr(camera_entity, 'friendly_name') }}"
             data:
               clickAction: "/control_panel/{{ camera_entity }}"
               uri: "/entity-card/{{ camera_entity }}"
