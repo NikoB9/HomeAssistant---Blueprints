@@ -1,5 +1,5 @@
 blueprint:
-  name: TUYA – Détection humaine
+  name: TUYA – Détection humaine (Correction)
   description: >
     Déclenche une notification lors d’une détection de corps humain.
   domain: automation
@@ -23,10 +23,7 @@ blueprint:
           integration: mobile_app
           multiple: true
 
-mode: parallel
-max: 10
-
-
+# On définit le mode UNE SEULE FOIS ici
 mode: parallel
 max: 10
 
@@ -35,26 +32,28 @@ trigger:
     entity_id: !input event_entities
 
 variables:
-  # On récupère le message JSON envoyé par Tuya
-  event_msg: "{{ trigger.to_state.attributes.message | default('') }}"
-  # On vérifie si c'est une détection humaine
-  is_human: "{{ 'ipc_human' in event_msg }}"
+  # On sécurise l'extraction du message
+  trigger_id: "{{ trigger.entity_id | default('unknown') }}"
+  # On transforme les attributs en texte pour une recherche infaillible
+  all_attributes: "{{ trigger.to_state.attributes | string }}"
+  is_human: "{{ 'ipc_human' in all_attributes }}"
   
   # Logique de correspondance pour trouver la caméra
   all_cameras: !input camera_entities
-  trigger_entity: "{{ trigger.entity_id }}"
   camera_entity: >
     {% set ns = namespace(found="") %}
-    {% for cam in all_cameras %}
-      {% set cam_name = cam.split('.')[-1] %}
-      {% if cam_name in trigger_entity %}
-        {% set ns.found = cam %}
-      {% endif %}
-    {% endfor %}
+    {% if trigger_id != 'unknown' %}
+      {% for cam in all_cameras %}
+        {% set cam_name = cam.split('.')[-1] %}
+        {% if cam_name in trigger_id %}
+          {% set ns.found = cam %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
     {{ ns.found }}
 
 condition:
-  # 1. On ne continue QUE si le message contient 'ipc_human'
+  # 1. On ne continue QUE si c'est un humain
   - "{{ is_human }}"
   # 2. On vérifie qu'on a trouvé une caméra correspondante
   - "{{ camera_entity != '' }}"
@@ -66,7 +65,7 @@ action:
         - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
           data:
             title: "🏃 Humain détecté !"
-            message: "Présence détectée sur {{ state_attr(camera_entity, 'friendly_name') }}"
+            message: "Présence détectée sur {{ state_attr(camera_entity, 'friendly_name') | default('Caméra') }}"
             data:
               clickAction: "/control_panel/{{ camera_entity }}"
               uri: "/entity-card/{{ camera_entity }}"
