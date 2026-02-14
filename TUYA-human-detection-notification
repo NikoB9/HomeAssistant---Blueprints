@@ -1,38 +1,45 @@
 blueprint:
-  name: TUYA – Détection personnalisée (snapshot + bouton Live)
+  name: TUYA – Détection personnalisée (snapshot + Live direct)
   description: >
-    Notifie sur mobile lors d'un événement Tuya (event.*), avec filtrage par type,
-    snapshot caméra et bouton ouvrant le direct (URI Lovelace). Cooldown inclus.
+    Notifie sur mobile lors d'un événement Tuya (event.*) avec filtrage optionnel par type (cmd),
+    prise d’un snapshot, et ouverture du direct caméra.
+    Inclut un cooldown anti-spam.
   domain: automation
 
   input:
     event_entities:
       name: Entités d'événements Tuya (event.*)
+      description: >
+        Entités event.* générées par l’intégration Tuya (ex: event.xxx_message).
       selector:
         entity:
           domain: event
           multiple: true
 
     camera_entities:
-      name: Caméras correspondantes (camera.*)
+      name: Caméras associées (camera.*)
       description: >
-        Fournir les caméras sources des événements. Le blueprint fait une
-        correspondance simple par sous-chaîne entre event.* et camera.*.
+        Caméras correspondant aux événements. Correspondance automatique par sous-chaîne :
+        si l’object_id de la caméra (après "camera.") est contenu dans l’object_id de l’événement (après "event."),
+        elle est sélectionnée. Exemple :
+          event.cam_entree_st_flo_doorbell_message -> camera.cam_entree_st_flo
+        Si aucune correspondance, la première caméra de la liste est utilisée.
       selector:
         entity:
           domain: camera
           multiple: true
 
     event_types:
-      name: Type(s) d'événement à détecter
+      name: Type(s) d'événement à détecter (cmd Tuya)
       description: >
-        Liste CSV (ex.: ipc_bang, ipc_human, ipc_motion). Laisser vide pour tout déclencher.
+        Liste CSV des cmd attendus (ex: ipc_bang, ipc_human, ipc_motion).
+        Laisser vide pour déclencher sur tous les événements.
       default: ""
       selector:
         text:
 
     notify_devices:
-      name: Appareils à notifier (Mobile App)
+      name: Appareils à notifier (Companion App / Mobile App)
       selector:
         device:
           integration: mobile_app
@@ -40,29 +47,33 @@ blueprint:
 
     notif_title:
       name: Titre de la notification
-      default: "Alerte Tuya"
+      default: "Alerte caméra"
       selector:
         text:
 
     notif_message:
       name: Message
       description: >
-        Variables disponibles : {{ detected_cmd }}, {{ trigger_entity }}, {{ camera_entity }}.
+        Variables disponibles :
+          - {{ detected_cmd }}
+          - {{ trigger_entity }}
+          - {{ camera_entity }}
       default: "Événement {{ detected_cmd }} — {{ camera_entity or trigger_entity }}"
       selector:
         text:
 
-    live_view_uri:
-      name: URI du direct (chemin Lovelace/Dashboard)
+    open_live_on_tap:
+      name: Ouvrir le direct au tap sur la notification
       description: >
-        Ex.: /cameras/entree ou /lovelace/cameras. Laisser vide pour ne pas ajouter de bouton.
-        (Selon la configuration, le préfixe peut être /lovelace/... ou directement /dashboard/view) 
-      default: ""
+        Si activé, un tap sur la notification ouvre directement la caméra (entityId:camera.xxx).
+      default: true
       selector:
-        text:
+        boolean:
 
-    set_click_action:
-      name: Ouvrir le direct au toucher de la notification (clickAction)
+    show_live_button:
+      name: Afficher un bouton "Voir la vidéo"
+      description: >
+        Ajoute un bouton dans la notification qui ouvre le direct caméra (entityId:camera.xxx).
       default: true
       selector:
         boolean:
@@ -80,9 +91,8 @@ blueprint:
     snapshot_dir:
       name: Dossier de snapshots
       description: >
-        Utiliser /media/... (recommandé) ou /config/www/... (équivaut à /local/...). 
-        /media/... sera servi comme /media/local/... dans la notification.
-      default: "/media/tuya"
+        Recommandé : /media/... (servi sous /media/local/... pour les notifications).
+      default: "/media/camera/snapshot"
       selector:
         text:
 
@@ -95,53 +105,74 @@ trigger:
 
 variables:
   trigger_entity: "{{ trigger.entity_id }}"
-  # JSON Tuya dans l'attribut 'message' (ex.: {"cmd":"ipc_bang","type":"image",...})
-  msg_json: "{{ state_attr(trigger_entity, 'message') | default('') | from_json(default={}) }}"
+
+  # Récupération sûre du JSON Tuya stocké dans l'attribut 'message'
+  msg_raw: "{{ state_attr(trigger_entity, 'message') | default('{}') }}"
+  msg_json: >
+    {% set s = msg_raw | string %}
+    {% if s.startswith('{') and s.endswith('}') %}
+      {{ s | from_json }}
+    {% else %}
+      {{ dict() }}
+    {% endif %}
+
+  # cmd Tuya (priorité au JSON 'message', puis fallback sur attributs connus)
   detected_cmd: >
-    {{ msg_json.cmd
+    {{ msg_json.get('cmd')
        or state_attr(trigger_entity, 'cmd')
        or state_attr(trigger_entity, 'type')
        or state_attr(trigger_entity, 'event_type')
        or 'unknown' }}
 
-  # Filtre par types (CSV)
+  # Filtre par cmd (CSV)
   wanted_csv: !input event_types
   wanted_list: >
     {% set csv = wanted_csv | default('') | trim %}
-    {% if csv == '' %}{{ [] }}
-    {% else %}{{ csv.split(',') | map('trim') | list }}{% endif %}
+    {% if csv == '' %}
+      {{ [] }}
+    {% else %}
+      {{ csv.split(',') | map('trim') | reject('equalto','') | list }}
+    {% endif %}
   match_evt: "{{ (wanted_list | length == 0) or (detected_cmd in wanted_list) }}"
 
   # Résolution caméra : sous-chaîne de l'object_id
   cameras: !input camera_entities
   camera_entity: >
-    {% set evt = trigger_entity.split('.')[-1] %}
-    {% set found = '' %}
+    {% set evt_obj = trigger_entity.split('.')[-1] %}
+    {% set found = namespace(val='') %}
     {% for cam in cameras %}
-      {% set obj = cam.split('.')[-1] %}
-      {% if obj in evt %}
-        {% set found = cam %}
+      {% set cam_obj = cam.split('.')[-1] %}
+      {% if cam_obj in evt_obj %}
+        {% set found.val = cam %}
       {% endif %}
     {% endfor %}
-    {{ found if found else (cameras[0] if cameras|length>0 else '') }}
+    {{ found.val if found.val else (cameras[0] if cameras|length>0 else '') }}
 
-  # Snapshot
+  # Snapshot : /media/... puis URL /media/local/...
   ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
   snapshot_dir: !input snapshot_dir
-  snapshot_path: "{{ snapshot_dir ~ '/' ~ (camera_entity|replace('.','_') if camera_entity else 'event') ~ '_' ~ ts ~ '.jpg' }}"
+  snapshot_path: >
+    {{ snapshot_dir ~ '/'
+       ~ (camera_entity|replace('.','_') if camera_entity else 'event')
+       ~ '_' ~ ts ~ '.jpg' }}
   snapshot_url: "{{ snapshot_path | replace('/media/', '/media/local/') }}"
 
   # Cooldown basé sur this.last_triggered
   cooldown: !input cooldown_seconds
   allow_notify: >
     {% set last = this.last_triggered if this is defined else none %}
-    {% if cooldown | int == 0 %}true
-    {% elif last is none %}true
-    {% else %}{{ (as_timestamp(now()) - as_timestamp(last)) >= (cooldown | int) }}{% endif %}
+    {% if cooldown | int == 0 %}
+      true
+    {% elif last is none %}
+      true
+    {% else %}
+      {{ (as_timestamp(now()) - as_timestamp(last)) >= (cooldown | int) }}
+    {% endif %}
 
-  live_uri: !input live_view_uri
-  have_live_uri: "{{ live_uri|trim != '' }}"
-  add_click: !input set_click_action
+  # Ouverture direct via entityId (sans Lovelace)
+  open_live_on_tap: !input open_live_on_tap
+  show_live_button: !input show_live_button
+  live_target: "{{ 'entityId:' ~ camera_entity if camera_entity else '' }}"
 
 condition:
   - condition: template
@@ -158,12 +189,14 @@ action:
       entity_id: "{{ camera_entity }}"
       filename: "{{ snapshot_path }}"
 
-  # Laisser le temps au fichier d'être écrit.
+  # Petite pause pour s'assurer que le fichier est écrit
   - delay: "00:00:01"
 
-  # 2) Envoi notification(s)
+  # 2) Notification(s)
   - choose:
-      - conditions: "{{ have_live_uri }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ show_live_button or open_live_on_tap }}"
         sequence:
           - repeat:
               for_each: !input notify_devices
@@ -174,17 +207,28 @@ action:
                   title: !input notif_title
                   message: !input notif_message
                   data:
-                    # Android: image ; iOS : attachment/url — on fournit les deux
+                    # Pièce jointe : on fournit les champs usuels iOS+Android
                     image: "{{ snapshot_url }}"
                     attachment:
                       url: "{{ snapshot_url }}"
                       content-type: jpeg
                       hide-thumbnail: false
-                    clickAction: "{{ live_uri }}"
-                    actions:
+
+                    # Tap sur la notification (Android: clickAction, iOS: url)
+                    clickAction: >
+                      {% if open_live_on_tap %}{{ live_target }}{% else %}noAction{% endif %}
+                    url: >
+                      {% if open_live_on_tap %}{{ live_target }}{% else %}noAction{% endif %}
+
+                    # Bouton action
+                    actions: >
+                      {% if show_live_button %}
                       - action: URI
-                        title: "Voir le direct"
-                        uri: "{{ live_uri }}"
+                        title: "Voir la vidéo"
+                        uri: "{{ live_target }}"
+                      {% else %}
+                      []
+                      {% endif %}
     default:
       - repeat:
           for_each: !input notify_devices
