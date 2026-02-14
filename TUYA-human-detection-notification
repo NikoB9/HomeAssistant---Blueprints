@@ -1,29 +1,91 @@
 blueprint:
-  name: TUYA – Détection humaine (Correction)
+  name: TUYA – Détection personnalisée (snapshot + bouton Live)
   description: >
-    Déclenche une notification lors d’une détection de corps humain.
+    Notifie sur mobile lors d'un événement Tuya (event.*), avec filtrage par type,
+    snapshot caméra et bouton ouvrant le direct (URI Lovelace). Cooldown inclus.
   domain: automation
+
   input:
     event_entities:
-      name: Entités "Event" à surveiller
+      name: Entités d'événements Tuya (event.*)
       selector:
         entity:
           domain: event
           multiple: true
+
     camera_entities:
-      name: Caméras correspondantes
+      name: Caméras correspondantes (camera.*)
+      description: >
+        Fournir les caméras sources des événements. Le blueprint fait une
+        correspondance simple par sous-chaîne entre event.* et camera.*.
       selector:
         entity:
           domain: camera
           multiple: true
+
+    event_types:
+      name: Type(s) d'événement à détecter
+      description: >
+        Liste CSV (ex.: ipc_bang, ipc_human, ipc_motion). Laisser vide pour tout déclencher.
+      default: ""
+      selector:
+        text:
+
     notify_devices:
-      name: Appareils à notifier
+      name: Appareils à notifier (Mobile App)
       selector:
         device:
           integration: mobile_app
           multiple: true
 
-# On définit le mode UNE SEULE FOIS ici
+    notif_title:
+      name: Titre de la notification
+      default: "Alerte Tuya"
+      selector:
+        text:
+
+    notif_message:
+      name: Message
+      description: >
+        Variables disponibles : {{ detected_cmd }}, {{ trigger_entity }}, {{ camera_entity }}.
+      default: "Événement {{ detected_cmd }} — {{ camera_entity or trigger_entity }}"
+      selector:
+        text:
+
+    live_view_uri:
+      name: URI du direct (chemin Lovelace/Dashboard)
+      description: >
+        Ex.: /cameras/entree ou /lovelace/cameras. Laisser vide pour ne pas ajouter de bouton.
+        (Selon la configuration, le préfixe peut être /lovelace/... ou directement /dashboard/view) 
+      default: ""
+      selector:
+        text:
+
+    set_click_action:
+      name: Ouvrir le direct au toucher de la notification (clickAction)
+      default: true
+      selector:
+        boolean:
+
+    cooldown_seconds:
+      name: Cooldown anti-spam (secondes)
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: s
+          mode: slider
+
+    snapshot_dir:
+      name: Dossier de snapshots
+      description: >
+        Utiliser /media/... (recommandé) ou /config/www/... (équivaut à /local/...). 
+        /media/... sera servi comme /media/local/... dans la notification.
+      default: "/media/tuya"
+      selector:
+        text:
+
 mode: parallel
 max: 10
 
@@ -32,43 +94,109 @@ trigger:
     entity_id: !input event_entities
 
 variables:
-  # On sécurise l'extraction du message
-  trigger_id: "{{ trigger.entity_id | default('unknown') }}"
-  # On transforme les attributs en texte pour une recherche infaillible
-  all_attributes: "{{ trigger.to_state.attributes | string }}"
-  is_human: "{{ 'ipc_human' in all_attributes }}"
-  
-  # Logique de correspondance pour trouver la caméra
-  all_cameras: !input camera_entities
+  trigger_entity: "{{ trigger.entity_id }}"
+  # JSON Tuya dans l'attribut 'message' (ex.: {"cmd":"ipc_bang","type":"image",...})
+  msg_json: "{{ state_attr(trigger_entity, 'message') | default('') | from_json(default={}) }}"
+  detected_cmd: >
+    {{ msg_json.cmd
+       or state_attr(trigger_entity, 'cmd')
+       or state_attr(trigger_entity, 'type')
+       or state_attr(trigger_entity, 'event_type')
+       or 'unknown' }}
+
+  # Filtre par types (CSV)
+  wanted_csv: !input event_types
+  wanted_list: >
+    {% set csv = wanted_csv | default('') | trim %}
+    {% if csv == '' %}{{ [] }}
+    {% else %}{{ csv.split(',') | map('trim') | list }}{% endif %}
+  match_evt: "{{ (wanted_list | length == 0) or (detected_cmd in wanted_list) }}"
+
+  # Résolution caméra : sous-chaîne de l'object_id
+  cameras: !input camera_entities
   camera_entity: >
-    {% set ns = namespace(found="") %}
-    {% if trigger_id != 'unknown' %}
-      {% for cam in all_cameras %}
-        {% set cam_name = cam.split('.')[-1] %}
-        {% if cam_name in trigger_id %}
-          {% set ns.found = cam %}
-        {% endif %}
-      {% endfor %}
-    {% endif %}
-    {{ ns.found }}
+    {% set evt = trigger_entity.split('.')[-1] %}
+    {% set found = '' %}
+    {% for cam in cameras %}
+      {% set obj = cam.split('.')[-1] %}
+      {% if obj in evt %}
+        {% set found = cam %}
+      {% endif %}
+    {% endfor %}
+    {{ found if found else (cameras[0] if cameras|length>0 else '') }}
+
+  # Snapshot
+  ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
+  snapshot_dir: !input snapshot_dir
+  snapshot_path: "{{ snapshot_dir ~ '/' ~ (camera_entity|replace('.','_') if camera_entity else 'event') ~ '_' ~ ts ~ '.jpg' }}"
+  snapshot_url: "{{ snapshot_path | replace('/media/', '/media/local/') }}"
+
+  # Cooldown basé sur this.last_triggered
+  cooldown: !input cooldown_seconds
+  allow_notify: >
+    {% set last = this.last_triggered if this is defined else none %}
+    {% if cooldown | int == 0 %}true
+    {% elif last is none %}true
+    {% else %}{{ (as_timestamp(now()) - as_timestamp(last)) >= (cooldown | int) }}{% endif %}
+
+  live_uri: !input live_view_uri
+  have_live_uri: "{{ live_uri|trim != '' }}"
+  add_click: !input set_click_action
 
 condition:
-  # 1. On ne continue QUE si c'est un humain
-  - "{{ is_human }}"
-  # 2. On vérifie qu'on a trouvé une caméra correspondante
-  - "{{ camera_entity != '' }}"
+  - condition: template
+    value_template: "{{ match_evt }}"
+  - condition: template
+    value_template: "{{ allow_notify }}"
+  - condition: template
+    value_template: "{{ camera_entity != '' }}"
 
 action:
-  - repeat:
-      for_each: !input notify_devices
-      sequence:
-        - service: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
-          data:
-            title: "🏃 Humain détecté !"
-            message: "Présence détectée sur {{ state_attr(camera_entity, 'friendly_name') | default('Caméra') }}"
-            data:
-              clickAction: "/control_panel/{{ camera_entity }}"
-              uri: "/entity-card/{{ camera_entity }}"
-              channel: tuya_detection
-              importance: high
-              priority: high
+  # 1) Snapshot
+  - service: camera.snapshot
+    data:
+      entity_id: "{{ camera_entity }}"
+      filename: "{{ snapshot_path }}"
+
+  # Laisser le temps au fichier d'être écrit.
+  - delay: "00:00:01"
+
+  # 2) Envoi notification(s)
+  - choose:
+      - conditions: "{{ have_live_uri }}"
+        sequence:
+          - repeat:
+              for_each: !input notify_devices
+              sequence:
+                - device_id: "{{ repeat.item }}"
+                  domain: mobile_app
+                  type: notify
+                  title: !input notif_title
+                  message: !input notif_message
+                  data:
+                    # Android: image ; iOS : attachment/url — on fournit les deux
+                    image: "{{ snapshot_url }}"
+                    attachment:
+                      url: "{{ snapshot_url }}"
+                      content-type: jpeg
+                      hide-thumbnail: false
+                    clickAction: "{{ live_uri }}"
+                    actions:
+                      - action: URI
+                        title: "Voir le direct"
+                        uri: "{{ live_uri }}"
+    default:
+      - repeat:
+          for_each: !input notify_devices
+          sequence:
+            - device_id: "{{ repeat.item }}"
+              domain: mobile_app
+              type: notify
+              title: !input notif_title
+              message: !input notif_message
+              data:
+                image: "{{ snapshot_url }}"
+                attachment:
+                  url: "{{ snapshot_url }}"
+                  content-type: jpeg
+                  hide-thumbnail: false
