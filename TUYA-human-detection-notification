@@ -1,16 +1,14 @@
 blueprint:
-  name: TUYA – Détection personnalisée (snapshot + Live direct Android)
+  name: TUYA – Détection personnalisée (snapshot + Live direct Android) – Stable
   description: >
-    Notifie sur Android lors d'un événement Tuya (event.*) avec filtrage optionnel par cmd,
-    prise d’un snapshot, et ouverture du direct caméra via entityId (sans Lovelace).
-    Inclut un cooldown anti-spam.
+    Déclenche sur changements d’état d’event.* Tuya. Filtrage optionnel par cmd,
+    snapshot + notification Android avec ouverture directe du live via entityId:camera.xxx
+    (tap notification + bouton). Cooldown inclus.
   domain: automation
 
   input:
     event_entities:
       name: Entités d'événements Tuya (event.*)
-      description: >
-        Entités event.* générées par Tuya (ex: event.xxx_message).
       selector:
         entity:
           domain: event
@@ -20,10 +18,8 @@ blueprint:
       name: Caméras associées (camera.*)
       description: >
         Correspondance automatique par sous-chaîne :
-        si l’object_id de la caméra (après "camera.") est contenu dans l’object_id de l’événement (après "event."),
-        elle est sélectionnée.
-        Exemple : event.cam_entree_st_flo_doorbell_message -> camera.cam_entree_st_flo
-        Si aucune correspondance, la première caméra de la liste est utilisée.
+        event.xxx contenant camera.yyy (object_id) -> camera.yyy.
+        Sinon fallback sur la première caméra de la liste.
       selector:
         entity:
           domain: camera
@@ -31,25 +27,22 @@ blueprint:
 
     event_types:
       name: Type(s) d'événement à détecter (cmd Tuya)
-      description: >
-        Liste CSV des cmd attendus (ex: ipc_bang, ipc_human, ipc_motion).
-        Laisser vide pour déclencher sur tous les événements.
+      description: "CSV ex: ipc_bang, ipc_human, ipc_motion. Vide = tout."
       default: ""
       selector:
         text:
 
-    notify_devices:
-      name: Appareils à notifier (Android / Companion App)
+    notify_services_csv:
+      name: Services de notification (CSV)
       description: >
-        Sélectionne un ou plusieurs appareils enregistrés via l’intégration mobile_app.
-        Le blueprint utilise ensuite notify.mobile_app_<device_id>.
+        Liste CSV de services notify à appeler, ex :
+        notify.mobile_app_pixel_6, notify.mobile_app_tablette_salon
+        (Android/Companion App)
       selector:
-        device:
-          integration: mobile_app
-          multiple: true
+        text:
 
     notif_title:
-      name: Titre de la notification
+      name: Titre
       default: "Alerte caméra"
       selector:
         text:
@@ -57,7 +50,7 @@ blueprint:
     notif_message:
       name: Message
       description: >
-        Variables disponibles :
+        Variables :
           - {{ detected_cmd }}
           - {{ trigger_entity }}
           - {{ camera_entity }}
@@ -66,17 +59,13 @@ blueprint:
         text:
 
     open_live_on_tap:
-      name: Ouvrir le direct au tap sur la notification (Android)
-      description: >
-        Si activé, un tap sur la notification ouvre entityId:camera.xxx.
+      name: Ouvrir le direct au tap (Android clickAction)
       default: true
       selector:
         boolean:
 
     show_live_button:
-      name: Afficher un bouton "Voir la vidéo"
-      description: >
-        Ajoute un bouton qui ouvre entityId:camera.xxx.
+      name: Bouton "Voir la vidéo"
       default: true
       selector:
         boolean:
@@ -93,9 +82,6 @@ blueprint:
 
     snapshot_dir:
       name: Dossier de snapshots
-      description: >
-        Recommandé : /media/... (servi sous /media/local/... pour les notifications).
-        Assure-toi que le dossier existe.
       default: "/media/camera/snapshot"
       selector:
         text:
@@ -110,7 +96,6 @@ trigger:
 variables:
   trigger_entity: "{{ trigger.entity_id }}"
 
-  # Lecture robuste du JSON Tuya dans l'attribut 'message'
   msg_raw: "{{ state_attr(trigger_entity, 'message') | default('{}') }}"
   msg_json: >
     {% set s = msg_raw | string %}
@@ -120,7 +105,6 @@ variables:
       {{ dict() }}
     {% endif %}
 
-  # cmd Tuya
   detected_cmd: >
     {{ msg_json.get('cmd')
        or state_attr(trigger_entity, 'cmd')
@@ -128,7 +112,6 @@ variables:
        or state_attr(trigger_entity, 'event_type')
        or 'unknown' }}
 
-  # Filtre cmd (CSV)
   wanted_csv: !input event_types
   wanted_list: >
     {% set csv = wanted_csv | default('') | trim %}
@@ -139,7 +122,6 @@ variables:
     {% endif %}
   match_evt: "{{ (wanted_list | length == 0) or (detected_cmd in wanted_list) }}"
 
-  # Correspondance caméra (sous-chaîne object_id)
   cameras: !input camera_entities
   camera_entity: >
     {% set evt_obj = trigger_entity.split('.')[-1] %}
@@ -152,7 +134,6 @@ variables:
     {% endfor %}
     {{ found.val if found.val else (cameras[0] if cameras|length>0 else '') }}
 
-  # Snapshot : chemin disque + URL /media/local/
   ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
   snapshot_dir: !input snapshot_dir
   snapshot_path: >
@@ -161,22 +142,27 @@ variables:
        ~ '_' ~ ts ~ '.jpg' }}
   snapshot_url: "{{ snapshot_path | replace('/media/', '/media/local/') }}"
 
-  # Cooldown
   cooldown: !input cooldown_seconds
   allow_notify: >
-    {% set last = this.last_triggered if this is defined else none %}
     {% if cooldown | int == 0 %}
       true
-    {% elif last is none %}
+    {% elif this.attributes.last_triggered is not defined %}
       true
     {% else %}
-      {{ (as_timestamp(now()) - as_timestamp(last)) >= (cooldown | int) }}
+      {{ (as_timestamp(now()) - as_timestamp(this.attributes.last_triggered)) >= (cooldown | int) }}
     {% endif %}
 
-  # Cible live (Android)
   open_live_on_tap: !input open_live_on_tap
   show_live_button: !input show_live_button
   live_target: "{{ 'entityId:' ~ camera_entity if camera_entity else '' }}"
+
+  notify_services: >
+    {% set s = ( !input notify_services_csv ) | default('') | trim %}
+    {% if s == '' %}
+      {{ [] }}
+    {% else %}
+      {{ s.split(',') | map('trim') | reject('equalto','') | list }}
+    {% endif %}
 
 condition:
   - condition: template
@@ -185,9 +171,10 @@ condition:
     value_template: "{{ allow_notify }}"
   - condition: template
     value_template: "{{ camera_entity != '' }}"
+  - condition: template
+    value_template: "{{ notify_services | length > 0 }}"
 
 action:
-  # 1) Snapshot
   - service: camera.snapshot
     data:
       entity_id: "{{ camera_entity }}"
@@ -195,17 +182,13 @@ action:
 
   - delay: "00:00:01"
 
-  # 2) Notifications (Android) via notify.mobile_app_<device_id>
-  - choose:
-      # Tap + bouton
-      - conditions:
-          - condition: template
-            value_template: "{{ show_live_button and open_live_on_tap }}"
-        sequence:
-          - repeat:
-              for_each: !input notify_devices
+  - repeat:
+      for_each: "{{ notify_services }}"
+      sequence:
+        - choose:
+            - conditions: "{{ show_live_button and open_live_on_tap }}"
               sequence:
-                - service: "notify.mobile_app_{{ repeat.item }}"
+                - service: "{{ repeat.item }}"
                   data:
                     title: !input notif_title
                     message: !input notif_message
@@ -221,15 +204,9 @@ action:
                           title: "Voir la vidéo"
                           uri: "{{ live_target }}"
 
-      # Tap uniquement
-      - conditions:
-          - condition: template
-            value_template: "{{ (not show_live_button) and open_live_on_tap }}"
-        sequence:
-          - repeat:
-              for_each: !input notify_devices
+            - conditions: "{{ (not show_live_button) and open_live_on_tap }}"
               sequence:
-                - service: "notify.mobile_app_{{ repeat.item }}"
+                - service: "{{ repeat.item }}"
                   data:
                     title: !input notif_title
                     message: !input notif_message
@@ -241,15 +218,9 @@ action:
                         hide-thumbnail: false
                       clickAction: "{{ live_target }}"
 
-      # Bouton uniquement
-      - conditions:
-          - condition: template
-            value_template: "{{ show_live_button and (not open_live_on_tap) }}"
-        sequence:
-          - repeat:
-              for_each: !input notify_devices
+            - conditions: "{{ show_live_button and (not open_live_on_tap) }}"
               sequence:
-                - service: "notify.mobile_app_{{ repeat.item }}"
+                - service: "{{ repeat.item }}"
                   data:
                     title: !input notif_title
                     message: !input notif_message
@@ -263,13 +234,8 @@ action:
                         - action: URI
                           title: "Voir la vidéo"
                           uri: "{{ live_target }}"
-
-    # Aucun live : notification simple
-    default:
-      - repeat:
-          for_each: !input notify_devices
-          sequence:
-            - service: "notify.mobile_app_{{ repeat.item }}"
+          default:
+            - service: "{{ repeat.item }}"
               data:
                 title: !input notif_title
                 message: !input notif_message
