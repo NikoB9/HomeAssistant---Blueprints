@@ -1,9 +1,9 @@
 blueprint:
-  name: TUYA – Détection personnalisée (snapshot + Live direct Android)
+  name: TUYA – Détection personnalisée V2
   description: >
-    Notifie sur Android lors d'un événement Tuya (event.*) avec filtrage optionnel par cmd,
-    snapshot, et ouverture du live caméra via entityId (sans Lovelace).
-    Multi-devices (mobile_app) + cooldown anti-spam.
+    Déclenche sur changements d’état d’event.* Tuya. Filtrage optionnel par cmd,
+    snapshot + notification Android avec ouverture live via entityId:camera.xxx (sans Lovelace).
+    Envoi via un groupe notify (ex: notify.all). Cooldown inclus.
   domain: automation
 
   input:
@@ -32,15 +32,13 @@ blueprint:
       selector:
         text:
 
-    notify_devices:
-      name: Appareils à notifier (Android / Companion App)
+    notify_service:
+      name: Service Notify (groupe)
       description: >
-        Sélectionne un ou plusieurs appareils mobile_app.
-        Le blueprint dérive automatiquement les services notify.mobile_app_*.
+        Service notify à appeler, ex: notify.all (recommandé), ou notify.mobile_app_sm_s928b.
+      default: notify.all
       selector:
-        device:
-          integration: mobile_app
-          multiple: true
+        text:
 
     notif_title:
       name: Titre
@@ -94,16 +92,19 @@ mode: parallel
 max: 10
 
 trigger:
+  # Déclenchement sur changement de state
   - platform: state
     entity_id: !input event_entities
+  # + déclenchement sur changement de l’attribut message (robustesse)
+  - platform: state
+    entity_id: !input event_entities
+    attribute: message
 
 variables:
   trigger_entity: "{{ trigger.entity_id }}"
-
-  # Inputs "bruts" utilisables en templates
-  notify_devices_input: !input notify_devices
   cameras: !input camera_entities
   wanted_csv: !input event_types
+  notify_service: !input notify_service
 
   # JSON Tuya dans l'attribut 'message'
   msg_raw: "{{ state_attr(trigger_entity, 'message') | default('{}') }}"
@@ -153,7 +154,7 @@ variables:
        ~ '_' ~ ts ~ '.jpg' }}
   snapshot_url: "{{ snapshot_path | replace('/media/', '/media/local/') }}"
 
-  # Cooldown robuste (évite this.last_triggered direct)
+  # Cooldown (robuste)
   cooldown: !input cooldown_seconds
   this_entity: >
     {% if this is defined and this.entity_id is defined %}
@@ -176,23 +177,9 @@ variables:
       {{ (as_timestamp(now()) - as_timestamp(last_triggered)) >= (cooldown | int) }}
     {% endif %}
 
-  # Cible live Android (More Info panel)
   open_live_on_tap: !input open_live_on_tap
   show_live_button: !input show_live_button
   live_target: "{{ 'entityId:' ~ camera_entity if camera_entity else '' }}"
-
-  # Conversion devices -> services notify.mobile_app_*
-  # Technique: prendre le device_tracker du device mobile_app, puis construire notify.mobile_app_<id>
-  notify_services: >
-    {% set ns = namespace(svcs=[]) %}
-    {% for d in notify_devices_input %}
-      {% set dt = (device_entities(d) | select('search','device_tracker') | list) %}
-      {% if dt | count > 0 %}
-        {% set svc = 'notify.mobile_app_' ~ (dt[0] | replace('device_tracker.','')) %}
-        {% set ns.svcs = ns.svcs + [svc] %}
-      {% endif %}
-    {% endfor %}
-    {{ ns.svcs | unique | list }}
 
 condition:
   - condition: template
@@ -202,7 +189,7 @@ condition:
   - condition: template
     value_template: "{{ camera_entity != '' }}"
   - condition: template
-    value_template: "{{ notify_services | length > 0 }}"
+    value_template: "{{ notify_service | trim != '' }}"
 
 action:
   - service: camera.snapshot
@@ -212,66 +199,63 @@ action:
 
   - delay: "00:00:01"
 
-  - repeat:
-      for_each: "{{ notify_services }}"
-      sequence:
-        - choose:
-            - conditions: "{{ show_live_button and open_live_on_tap }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  data:
-                    title: !input notif_title
-                    message: !input notif_message
-                    data:
-                      image: "{{ snapshot_url }}"
-                      attachment:
-                        url: "{{ snapshot_url }}"
-                        content-type: jpeg
-                        hide-thumbnail: false
-                      clickAction: "{{ live_target }}"
-                      actions:
-                        - action: URI
-                          title: "Voir la vidéo"
-                          uri: "{{ live_target }}"
-
-            - conditions: "{{ (not show_live_button) and open_live_on_tap }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  data:
-                    title: !input notif_title
-                    message: !input notif_message
-                    data:
-                      image: "{{ snapshot_url }}"
-                      attachment:
-                        url: "{{ snapshot_url }}"
-                        content-type: jpeg
-                        hide-thumbnail: false
-                      clickAction: "{{ live_target }}"
-
-            - conditions: "{{ show_live_button and (not open_live_on_tap) }}"
-              sequence:
-                - service: "{{ repeat.item }}"
-                  data:
-                    title: !input notif_title
-                    message: !input notif_message
-                    data:
-                      image: "{{ snapshot_url }}"
-                      attachment:
-                        url: "{{ snapshot_url }}"
-                        content-type: jpeg
-                        hide-thumbnail: false
-                      actions:
-                        - action: URI
-                          title: "Voir la vidéo"
-                          uri: "{{ live_target }}"
-          default:
-            - service: "{{ repeat.item }}"
+  - choose:
+      - conditions: "{{ show_live_button and open_live_on_tap }}"
+        sequence:
+          - service: "{{ notify_service }}"
+            data:
+              title: !input notif_title
+              message: !input notif_message
               data:
-                title: !input notif_title
-                message: !input notif_message
-                data:
-                  image: "{{ snapshot_url }}"
-                  attachment:
-                    url: "{{ snapshot_url }}"
-                    content-type: jpeg
-                    hide-thumbnail: false
+                image: "{{ snapshot_url }}"
+                attachment:
+                  url: "{{ snapshot_url }}"
+                  content-type: jpeg
+                  hide-thumbnail: false
+                clickAction: "{{ live_target }}"
+                actions:
+                  - action: URI
+                    title: "Voir la vidéo"
+                    uri: "{{ live_target }}"
+
+      - conditions: "{{ (not show_live_button) and open_live_on_tap }}"
+        sequence:
+          - service: "{{ notify_service }}"
+            data:
+              title: !input notif_title
+              message: !input notif_message
+              data:
+                image: "{{ snapshot_url }}"
+                attachment:
+                  url: "{{ snapshot_url }}"
+                  content-type: jpeg
+                  hide-thumbnail: false
+                clickAction: "{{ live_target }}"
+
+      - conditions: "{{ show_live_button and (not open_live_on_tap) }}"
+        sequence:
+          - service: "{{ notify_service }}"
+            data:
+              title: !input notif_title
+              message: !input notif_message
+              data:
+                image: "{{ snapshot_url }}"
+                attachment:
+                  url: "{{ snapshot_url }}"
+                  content-type: jpeg
+                  hide-thumbnail: false
+                actions:
+                  - action: URI
+                    title: "Voir la vidéo"
+                    uri: "{{ live_target }}"
+    default:
+      - service: "{{ notify_service }}"
+        data:
+          title: !input notif_title
+          message: !input notif_message
+          data:
+            image: "{{ snapshot_url }}"
+            attachment:
+              url: "{{ snapshot_url }}"
+              content-type: jpeg
+              hide-thumbnail: false
