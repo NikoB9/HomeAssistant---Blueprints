@@ -1,5 +1,5 @@
 blueprint:
-  name: TUYA – Détection personnalisée V2
+  name: TUYA – Détection personnalisée V3
   description: >
     Déclenche sur changements d’état d’event.* Tuya. Filtrage optionnel par cmd,
     snapshot + notification Android avec ouverture live via entityId:camera.xxx (sans Lovelace).
@@ -51,9 +51,12 @@ blueprint:
       description: >
         Variables disponibles :
           - {{ detected_cmd }}
+          - {{ detected_cmd_readable }}
           - {{ trigger_entity }}
+          - {{ trigger_entity_name }}
           - {{ camera_entity }}
-      default: "Événement {{ detected_cmd }} — {{ camera_entity or trigger_entity }}"
+          - {{ camera_entity_name }}
+      default: "Événement de {{ detected_cmd_readable }} — {{ camera_entity_name or trigger_entity_name }}"
       selector:
         text:
 
@@ -102,6 +105,11 @@ trigger:
 
 variables:
   trigger_entity: "{{ trigger.entity_id }}"
+
+  trigger_entity_name: >
+      {% set n = state_attr(trigger_entity, 'friendly_name') if trigger_entity else none %}
+      {{ n if n else trigger_entity }}
+
   cameras: !input camera_entities
   wanted_csv: !input event_types
   notify_service: !input notify_service
@@ -122,6 +130,15 @@ variables:
        or state_attr(trigger_entity, 'type')
        or state_attr(trigger_entity, 'event_type')
        or 'unknown' }}
+
+  # Cmd lisible
+  detected_cmd_readable: >
+    {% set m = {
+      'ipc_bang': 'détection sonore',
+      'ipc_human': 'détection humaine',
+      'ipc_motion': 'détection de mouvement'
+    } %}
+    {{ m.get(detected_cmd, detected_cmd) }}
 
   # Filtre cmd (CSV)
   wanted_list: >
@@ -144,6 +161,10 @@ variables:
       {% endif %}
     {% endfor %}
     {{ found.val if found.val else (cameras[0] if cameras|length>0 else '') }}
+
+  camera_entity_name: >
+    {% set n = state_attr(camera_entity, 'friendly_name') if camera_entity else none %}
+    {{ n if n else camera_entity }}
 
   # Snapshot
   ts: "{{ now().strftime('%Y%m%d_%H%M%S') }}"
